@@ -39,10 +39,10 @@ const MMappedFile = struct {
 
     const Self = @This();
 
-    pub fn init(file: fs.File, bytelen: usize) !Self {
+    pub fn init(file: fs.File, bytelen: u64) !Self {
         var ptr = os.mmap(
             null,
-            bytelen,
+            @intCast(bytelen),
             os.PROT.READ | os.PROT.WRITE,
             os.MAP.SHARED,
             file.handle,
@@ -151,7 +151,7 @@ export fn rr_start(dir_path_ptr: [*:0]const u8, dir_path_len: u32) ?*anyopaque {
     };
     errdefer menu_file.close();
 
-    result.metadata_file = MMappedFile.init(metadata_file, @sizeOf(Metadata)) catch |e| {
+    result.metadata_file = MMappedFile.init(metadata_file, @intCast(@sizeOf(Metadata))) catch |e| {
         _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to mmap metadata file ({})", .{e}) catch unreachable;
         return null;
     };

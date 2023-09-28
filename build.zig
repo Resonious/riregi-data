@@ -24,6 +24,70 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const AndroidBuild = struct {
+        sub_path: []const u8,
+        target: std.zig.CrossTarget,
+    };
+
+    const android_os = .linux;
+    const android_abi = .android;
+    const android_builds = [_]AndroidBuild{
+        AndroidBuild{
+            .sub_path = "arm64-v8a/libriregi-data.so",
+            .target = std.zig.CrossTarget{
+                .cpu_arch = .aarch64,
+                .os_tag = android_os,
+                .abi = android_abi,
+                .cpu_model = .baseline,
+                .cpu_features_add = std.Target.aarch64.featureSet(&.{.v8a}),
+            },
+        },
+
+        AndroidBuild{
+            .sub_path = "armeabi-v7a/libriregi-data.so",
+            .target = std.zig.CrossTarget{
+                .cpu_arch = .arm,
+                .os_tag = android_os,
+                .abi = android_abi,
+                .cpu_model = .baseline,
+                .cpu_features_add = std.Target.arm.featureSet(&.{.v7a}),
+            },
+        },
+
+        // AndroidBuild{
+        //     .sub_path = "x86/libriregi-data.so",
+        //     .target = std.zig.CrossTarget{
+        //         .cpu_arch = .x86,
+        //         .os_tag = android_os,
+        //         .abi = android_abi,
+        //         .cpu_model = .baseline,
+        //     },
+        // },
+
+        AndroidBuild{
+            .sub_path = "x86_64/libriregi-data.so",
+            .target = std.zig.CrossTarget{
+                .cpu_arch = .x86_64,
+                .os_tag = android_os,
+                .abi = android_abi,
+                .cpu_model = .baseline,
+            },
+        },
+    };
+
+    for (android_builds) |a| {
+        const android_lib = b.addSharedLibrary(.{
+            .name = "riregi-data",
+            .root_source_file = .{ .path = "src/main.zig" },
+            .target = a.target,
+            .optimize = optimize,
+        });
+        const install = b.addInstallArtifact(android_lib, .{
+            .dest_sub_path = a.sub_path,
+        });
+        b.getInstallStep().dependOn(&install.step);
+    }
+
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
