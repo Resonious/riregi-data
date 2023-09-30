@@ -281,6 +281,31 @@ export fn rr_menu_item_set_name(
     return setMenuItemStringAttr(app_state_ptr, index, "name", name, name_len);
 }
 
+export fn rr_menu_item_set_image_path(
+    app_state_ptr: *anyopaque,
+    index: u32,
+    image_path: [*c]const u8,
+    image_path_len: u32,
+) c_int {
+    return setMenuItemStringAttr(app_state_ptr, index, "image_path", image_path, image_path_len);
+}
+
+export fn rr_menu_item_set_price(
+    app_state_ptr: *anyopaque,
+    index: u32,
+    price: i64,
+) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(app_state, index)) {
+        return 0;
+    }
+
+    app_state.menu()[index].price = price;
+
+    return 1;
+}
+
 fn isOutOfBounds(
     app_state: *ActiveAppState,
     index: u32,
@@ -394,6 +419,7 @@ test "app functionality" {
     try testing.expectEqual(rr_menu_len(app), 2);
     try testing.expectEqual(rr_menu_item_price(app, 1), 300);
 
+    // Try setting only the name
     {
         const new_name = "new tacos";
         const result = rr_menu_item_set_name(app, 1, new_name, new_name.len);
@@ -403,9 +429,13 @@ test "app functionality" {
             return error.menu_item_edit_failed;
         }
 
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 1);
+
         try testing.expectEqualSentinel(
-            @ptrCast(rr_menu_item_name(app, 1)),
-            @ptrCast("new tacos\x00"),
+            u8,
+            0,
+            fetched_name[0..10 :0],
+            "new tacos\x00",
         );
     }
 
