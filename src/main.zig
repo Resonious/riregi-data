@@ -272,6 +272,15 @@ export fn rr_menu_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
     return fetchMenuItemAttr(app_state_ptr, index, "price", i64, 0);
 }
 
+export fn rr_menu_item_set_name(
+    app_state_ptr: *anyopaque,
+    index: u32,
+    name: [*c]const u8,
+    name_len: u32,
+) c_int {
+    return setMenuItemStringAttr(app_state_ptr, index, "name", name, name_len);
+}
+
 fn isOutOfBounds(
     app_state: *ActiveAppState,
     index: u32,
@@ -286,7 +295,7 @@ fn isOutOfBounds(
 fn fetchMenuItemAttr(
     app_state_ptr: *anyopaque,
     index: u32,
-    comptime field_name: [*c]const u8,
+    comptime field_name: []const u8,
     comptime return_type: type,
     on_not_found: return_type,
 ) return_type {
@@ -308,6 +317,27 @@ fn fetchMenuItemAttr(
             return @field(menu_item.*, field_name);
         },
     }
+}
+
+fn setMenuItemStringAttr(
+    app_state_ptr: *anyopaque,
+    index: u32,
+    comptime field_name: []const u8,
+    value: [*c]const u8,
+    value_len: u32,
+) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(app_state, index)) {
+        return 0;
+    }
+
+    _ = std.fmt.bufPrintZ(&@field(app_state.menu()[index], field_name), "{s}", .{value[0..value_len]}) catch {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu item " ++ field_name ++ " too long", .{}) catch unreachable;
+        return 0;
+    };
+
+    return 1;
 }
 
 test "rr_start errors when passed a bad path" {
@@ -363,6 +393,21 @@ test "app functionality" {
     }
     try testing.expectEqual(rr_menu_len(app), 2);
     try testing.expectEqual(rr_menu_item_price(app, 1), 300);
+
+    {
+        const new_name = "new tacos";
+        const result = rr_menu_item_set_name(app, 1, new_name, new_name.len);
+
+        if (result != 1) {
+            std.log.err("MENU ITEM NAME SET FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.menu_item_edit_failed;
+        }
+
+        try testing.expectEqualSentinel(
+            @ptrCast(rr_menu_item_name(app, 1)),
+            @ptrCast("new tacos\x00"),
+        );
+    }
 
     // Cleanup and then start again. All data should be persisted.
     rr_cleanup(app);
