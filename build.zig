@@ -80,8 +80,24 @@ pub fn build(b: *std.Build) void {
             .name = "riregi-data",
             .root_source_file = .{ .path = "src/main.zig" },
             .target = a.target,
-            .optimize = optimize,
+            .optimize = .ReleaseSafe,
+            .link_libc = false,
         });
+        android_lib.link_gc_sections = true;
+        android_lib.link_emit_relocs = false;
+        android_lib.link_eh_frame_hdr = false;
+        android_lib.force_pic = true;
+        android_lib.link_function_sections = false;
+        android_lib.bundle_compiler_rt = true;
+        android_lib.strip = (optimize == .ReleaseSmall);
+        android_lib.export_table = true;
+        android_lib.addCSourceFile(.{
+            .file = .{ .path = "src/stub.c" },
+            .flags = &[_][]const u8{
+                "-fno-sanitize=undefined",
+            },
+        });
+
         const install = b.addInstallArtifact(android_lib, .{
             .dest_sub_path = a.sub_path,
         });
