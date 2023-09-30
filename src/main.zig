@@ -96,6 +96,18 @@ const ActiveAppState = struct {
         self.metadata().menu_len += 1;
         return &menu_items_arr[i];
     }
+
+    fn removeMenuItem(self: *Self, index: usize) void {
+        var menu_slice = self.menu();
+
+        // Shift everything over.
+        for (index..menu_slice.len - 1) |i| {
+            menu_slice[i] = menu_slice[i + 1];
+        }
+
+        // Subtract len.
+        self.metadata().menu_len -= 1;
+    }
 };
 
 var rr_error_string: [512]u8 = mem.zeroes([512]u8);
@@ -260,6 +272,21 @@ export fn rr_menu_update(
     return 1;
 }
 
+export fn rr_menu_remove(
+    app_state_ptr: *anyopaque,
+    index: u32,
+) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(app_state, index)) {
+        return 0;
+    }
+
+    app_state.removeMenuItem(@intCast(index));
+
+    return 1;
+}
+
 export fn rr_menu_item_name(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
     return fetchMenuItemAttr(app_state_ptr, index, "name", [*c]const u8, null);
 }
@@ -375,16 +402,16 @@ test "rr_start errors when passed a bad path" {
 
 test "app functionality" {
     const cwd = fs.cwd();
-    try cwd.deleteTree("zig-cache/test");
+    try cwd.deleteTree("zig-cache/test1");
 
-    cwd.makeDir("zig-cache/test") catch |e| {
+    cwd.makeDir("zig-cache/test1") catch |e| {
         if (e != std.os.MakeDirError.PathAlreadyExists) {
             return e;
         }
     };
 
     // Start session
-    const dir_path = "zig-cache/test\x00";
+    const dir_path = "zig-cache/test1\x00";
     var app = rr_start(@ptrCast(dir_path), dir_path.len - 1) orelse {
         std.log.err("FAILED TO START: {s}", .{rr_error_string[0.. :0]});
         return error.failed_to_start;
@@ -430,13 +457,7 @@ test "app functionality" {
         }
 
         const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 1);
-
-        try testing.expectEqualSentinel(
-            u8,
-            0,
-            fetched_name[0..10 :0],
-            "new tacos\x00",
-        );
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
     }
 
     // Cleanup and then start again. All data should be persisted.
@@ -448,6 +469,90 @@ test "app functionality" {
     try testing.expectEqual(rr_menu_len(app), 2);
     try testing.expectEqual(rr_menu_item_price(app, 0), 152);
     try testing.expectEqual(rr_menu_item_price(app, 1), 300);
+    rr_cleanup(app);
+}
+
+test "large numbers of items" {
+    const cwd = fs.cwd();
+    try cwd.deleteTree("zig-cache/test2");
+
+    cwd.makeDir("zig-cache/test2") catch |e| {
+        if (e != std.os.MakeDirError.PathAlreadyExists) {
+            return e;
+        }
+    };
+
+    // Start session
+    const dir_path = "zig-cache/test2\x00";
+    var app = rr_start(@ptrCast(dir_path), dir_path.len - 1) orelse {
+        return error.failed_to_start;
+    };
+
+    const ToAdd = struct {
+        name: []const u8,
+        price: i64,
+    };
+    const lets_add = [_]ToAdd{
+        .{
+            .name = "item 1",
+            .price = 100,
+        },
+        .{
+            .name = "item 2",
+            .price = 200,
+        },
+        .{
+            .name = "item 3",
+            .price = 200,
+        },
+        .{
+            .name = "item 4",
+            .price = 200,
+        },
+        .{
+            .name = "item 5",
+            .price = 250,
+        },
+    };
+    for (lets_add) |add| {
+        const result = rr_menu_add(app, add.price, add.name.ptr, @intCast(add.name.len), dir_path, dir_path.len);
+        try testing.expectEqual(result, 1);
+    }
+
+    // Remove one in the middle
+    {
+        try testing.expectEqual(rr_menu_len(app), 5);
+        const result = rr_menu_remove(app, 2);
+        try testing.expectEqual(result, 1);
+        try testing.expectEqual(rr_menu_len(app), 4);
+    }
+
+    // Make sure it's gone and everything else is shifted
+    {
+        const real_name = "item 1";
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 0);
+        try testing.expectEqualStrings(fetched_name[0..real_name.len], real_name);
+    }
+    {
+        const real_name = "item 2";
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 1);
+        try testing.expectEqualStrings(fetched_name[0..real_name.len], real_name);
+    }
+    {
+        const real_name = "item 4";
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 2);
+        try testing.expectEqualStrings(fetched_name[0..real_name.len], real_name);
+    }
+    {
+        const real_name = "item 5";
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 3);
+        try testing.expectEqualStrings(fetched_name[0..real_name.len], real_name);
+    }
+    {
+        const fetched_name: [*c]const u8 = rr_menu_item_name(app, 4);
+        try testing.expectEqual(fetched_name, null);
+    }
+
     rr_cleanup(app);
 }
 
