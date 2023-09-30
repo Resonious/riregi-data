@@ -224,6 +224,42 @@ export fn rr_menu_add(
     return 1;
 }
 
+export fn rr_menu_update(
+    app_state_ptr: *anyopaque,
+    index: u32,
+    price: i64,
+    name: [*c]const u8,
+    name_len: u32,
+    image_path: [*c]const u8,
+    image_path_len: u32,
+) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(app_state, index)) {
+        return 0;
+    }
+
+    var menu_item = MenuItem{
+        .version = 1,
+        .id = app_state.menuLen(),
+        .active = 1,
+        .price = price,
+    };
+
+    _ = std.fmt.bufPrintZ(&menu_item.name, "{s}", .{name[0..name_len]}) catch {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu item name too long", .{}) catch unreachable;
+        return 0;
+    };
+    _ = std.fmt.bufPrintZ(&menu_item.image_path, "{s}", .{image_path[0..image_path_len]}) catch {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu item image_path too long", .{}) catch unreachable;
+        return 0;
+    };
+
+    app_state.menu()[index] = menu_item;
+
+    return 1;
+}
+
 export fn rr_menu_item_name(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
     return fetchMenuItemAttr(app_state_ptr, index, "name", [*c]const u8, null);
 }
@@ -236,17 +272,27 @@ export fn rr_menu_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
     return fetchMenuItemAttr(app_state_ptr, index, "price", i64, 0);
 }
 
+fn isOutOfBounds(
+    app_state: *ActiveAppState,
+    index: u32,
+) bool {
+    if (index >= app_state.menuLen()) {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu index ({}) out of bounds ({})", .{ index, app_state.menuLen() }) catch unreachable;
+        return true;
+    }
+    return false;
+}
+
 fn fetchMenuItemAttr(
     app_state_ptr: *anyopaque,
     index: u32,
-    comptime field_name: []const u8,
+    comptime field_name: [*c]const u8,
     comptime return_type: type,
     on_not_found: return_type,
 ) return_type {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (index >= app_state.menuLen()) {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu index ({}) out of bounds ({})", .{ index, app_state.menuLen() }) catch unreachable;
+    if (isOutOfBounds(app_state, index)) {
         return on_not_found;
     }
 
@@ -330,12 +376,4 @@ test "app functionality" {
     rr_cleanup(app);
 }
 
-export fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
-
 const testing = std.testing;
-
-test "basic add functionality" {
-    try testing.expect(add(3, 7) == 10);
-}
