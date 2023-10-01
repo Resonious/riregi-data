@@ -152,7 +152,7 @@ const ActiveAppState = struct {
 
     fn orders(self: *Self) []Order {
         var order_arr: [*]Order = @ptrCast(self.orders_file.ptr.ptr);
-        return order_arr[0..self.ordersLen()];
+        return order_arr[0..@intCast(self.ordersLen())];
     }
 
     fn ordersLen(self: *Self) u64 {
