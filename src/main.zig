@@ -7,20 +7,16 @@ const fmt = std.fmt;
 const MMapPtr = []align(mem.page_size) u8;
 
 const MenuItem = extern struct {
-    /// 0 means "null", and every number thereafter refers to a variation of this struct that doesn't yet exist.
-    version: i32 = 1,
-    /// Pretty much the index of this menu item.
-    id: u32,
-    /// 0 or 1 if the menu item should be shown.
-    active: u8 = 1,
-    /// Price!
     price: i64,
     name: [256:0]u8 = undefined,
     image_path: [512:0]u8 = undefined,
 };
 
 const Metadata = extern struct {
+    // Version number lets us do "migrations" if we need to change data.
     version: i32,
+
+    /// Number of MenuItems inside the menu file.
     menu_len: u32,
 
     const Self = @This();
@@ -62,6 +58,14 @@ const MMappedFile = struct {
         os.munmap(self.ptr);
         self.file.close();
     }
+
+    pub fn resize(self: *Self, new_size: u64) !void {
+        os.munmap(self.ptr);
+        errdefer deinit(self);
+
+        try os.ftruncate(self.file.handle, new_size);
+        self.* = try init(self.file, new_size);
+    }
 };
 
 /// Represents an active session
@@ -84,10 +88,10 @@ const ActiveAppState = struct {
         return menu_items_arr[0..self.menuLen()];
     }
 
-    fn addMenuItem(self: *Self, item: MenuItem) *MenuItem {
+    fn addMenuItem(self: *Self, item: MenuItem) !*MenuItem {
         const current_menu_len_in_bytes = self.menuLen() * @sizeOf(MenuItem);
-        if (current_menu_len_in_bytes > self.menu_file.ptr.len) {
-            @panic("TODO: expand menu file when too many items added?");
+        if (current_menu_len_in_bytes >= self.menu_file.ptr.len) {
+            try self.menu_file.resize(current_menu_len_in_bytes * 2);
         }
 
         var menu_items_arr: [*]MenuItem = @ptrCast(self.menu_file.ptr.ptr);
@@ -218,11 +222,11 @@ export fn rr_menu_add(
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
     var menu_item = app_state.addMenuItem(MenuItem{
-        .version = 1,
-        .id = app_state.menuLen(),
-        .active = 1,
         .price = price,
-    });
+    }) catch {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Filesystem error", .{}) catch unreachable;
+        return 0;
+    };
 
     _ = std.fmt.bufPrintZ(&menu_item.name, "{s}", .{name[0..name_len]}) catch {
         _ = fmt.bufPrintZ(rr_error_string[0..], "Menu item name too long", .{}) catch unreachable;
@@ -252,9 +256,6 @@ export fn rr_menu_update(
     }
 
     var menu_item = MenuItem{
-        .version = 1,
-        .id = app_state.menuLen(),
-        .active = 1,
         .price = price,
     };
 
@@ -551,6 +552,26 @@ test "large numbers of items" {
     {
         const fetched_name: [*c]const u8 = rr_menu_item_name(app, 4);
         try testing.expectEqual(fetched_name, null);
+    }
+
+    // Now let's make wayyy more to test resize
+    for (0..40) |i| {
+        const add = ToAdd{
+            .price = @intCast(i),
+            .name = "dont care",
+        };
+
+        const result = rr_menu_add(app, add.price, add.name.ptr, @intCast(add.name.len), dir_path, dir_path.len);
+        try testing.expectEqual(result, 1);
+    }
+
+    {
+        const real_name = "dont care";
+        const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 32);
+        try testing.expectEqualStrings(fetched_name[0..real_name.len], real_name);
+        try testing.expectEqual(rr_menu_item_price(app, 32 + 4), 32);
+        try testing.expectEqual(rr_menu_item_price(app, 31 + 4), 31);
+        try testing.expectEqual(rr_menu_item_price(app, 36 + 4), 36);
     }
 
     rr_cleanup(app);
