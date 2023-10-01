@@ -164,6 +164,11 @@ const ActiveAppState = struct {
         return &self.orders()[i];
     }
 
+    fn currentOrderItemsCount(self: *Self) u32 {
+        const i: usize = @intCast(self.metadata().current_order_num);
+        return self.orders()[i].item_count;
+    }
+
     fn currentOrderItems(self: *Self) []MenuItem {
         var current_order_items_arr: [*]MenuItem = @ptrCast(self.current_order_items_file.ptr.ptr);
         return current_order_items_arr[0..@intCast(self.currentOrder().item_count)];
@@ -372,15 +377,15 @@ export fn rr_menu_remove(
 }
 
 export fn rr_menu_item_name(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
-    return fetchMenuItemAttr(app_state_ptr, index, "name", [*c]const u8, null);
+    return fetchMenuItemAttr(app_state_ptr, "Menu", "menuLen", "menu", index, "name", [*c]const u8, null);
 }
 
 export fn rr_menu_item_image_path(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
-    return fetchMenuItemAttr(app_state_ptr, index, "image_path", [*c]const u8, null);
+    return fetchMenuItemAttr(app_state_ptr, "Menu", "menuLen", "menu", index, "image_path", [*c]const u8, null);
 }
 
 export fn rr_menu_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
-    return fetchMenuItemAttr(app_state_ptr, index, "price", i64, 0);
+    return fetchMenuItemAttr(app_state_ptr, "Menu", "menuLen", "menu", index, "price", i64, 0);
 }
 
 export fn rr_menu_item_set_name(
@@ -459,6 +464,45 @@ export fn rr_remove_order_item(app_state_ptr: *anyopaque, index: u32) c_int {
     return 1;
 }
 
+export fn rr_order_item_name(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item",
+        "currentOrderItemsCount",
+        "currentOrderItems",
+        index,
+        "name",
+        [*c]const u8,
+        null,
+    );
+}
+
+export fn rr_order_item_image_path(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item",
+        "currentOrderItemsCount",
+        "currentOrderItems",
+        index,
+        "image_path",
+        [*c]const u8,
+        null,
+    );
+}
+
+export fn rr_order_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item",
+        "currentOrderItemsCount",
+        "currentOrderItems",
+        index,
+        "price",
+        i64,
+        0,
+    );
+}
+
 fn isOutOfBounds(
     index: u32,
     bounds: u32,
@@ -473,6 +517,9 @@ fn isOutOfBounds(
 
 fn fetchMenuItemAttr(
     app_state_ptr: *anyopaque,
+    comptime whatisit: []const u8,
+    comptime len_getter: []const u8,
+    comptime array_getter: []const u8,
     index: u32,
     comptime field_name: []const u8,
     comptime return_type: type,
@@ -480,11 +527,11 @@ fn fetchMenuItemAttr(
 ) return_type {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
+    if (isOutOfBounds(index, @field(ActiveAppState, len_getter)(app_state), whatisit)) {
         return on_not_found;
     }
 
-    var menu_item = &app_state.menu()[index];
+    var menu_item = &@field(ActiveAppState, array_getter)(app_state)[index];
     const field = @typeInfo(@TypeOf(@field(menu_item.*, field_name)));
 
     switch (field) {
@@ -601,6 +648,9 @@ test "app functionality" {
         try testing.expectEqual(rr_current_order_len(app), 1);
         try testing.expectEqual(rr_current_order_total(app), 300);
 
+        const fetched_name: [*:0]const u8 = rr_order_item_name(app, 0);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+
         result = rr_add_item_to_order(app, 0);
         if (result != 1) {
             std.log.err("ORDER ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
@@ -620,6 +670,7 @@ test "app functionality" {
         }
 
         try testing.expectEqual(rr_current_order_total(app), 152);
+        try testing.expectEqual(rr_order_item_price(app, 0), 152);
     }
 
     // Cleanup and then start again. All data should be persisted.
