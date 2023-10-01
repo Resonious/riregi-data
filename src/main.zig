@@ -19,6 +19,12 @@ const Metadata = extern struct {
     /// Number of MenuItems inside the menu file.
     menu_len: u32,
 
+    /// Number of Orders in the orders file.
+    orders_len: u64,
+
+    /// Serial number of the current order.
+    current_order_num: u64,
+
     const Self = @This();
 
     pub fn init() Self {
@@ -29,11 +35,36 @@ const Metadata = extern struct {
     }
 };
 
+const Order = extern struct {
+    total: i64,
+    item_count: u32,
+
+    /// Maybe stupid but in case I want to add more fields without hell.
+    padding: [256]u8,
+};
+
 const MMappedFile = struct {
+    initialized: bool,
     file: fs.File,
     ptr: MMapPtr,
 
     const Self = @This();
+
+    pub fn open(dir: fs.Dir, file_name: []const u8, bytesize: u64) !Self {
+        var file = try dir.createFile(file_name, .{ .read = true, .truncate = false });
+        errdefer file.close();
+
+        var file_size = (try file.stat()).size;
+
+        if (file_size == 0) {
+            try os.ftruncate(file.handle, bytesize);
+        }
+
+        var self = try init(file, bytesize);
+        errdefer self.deinit();
+
+        return self;
+    }
 
     pub fn init(file: fs.File, bytelen: u64) !Self {
         var ptr = os.mmap(
@@ -49,6 +80,7 @@ const MMappedFile = struct {
         };
 
         return .{
+            .initialized = true,
             .file = file,
             .ptr = ptr,
         };
@@ -57,9 +89,11 @@ const MMappedFile = struct {
     pub fn deinit(self: *Self) void {
         os.munmap(self.ptr);
         self.file.close();
+        self.initialized = false;
     }
 
     pub fn resize(self: *Self, new_size: u64) !void {
+        std.debug.assert(self.initialized);
         os.munmap(self.ptr);
         errdefer deinit(self);
 
@@ -72,6 +106,9 @@ const MMappedFile = struct {
 const ActiveAppState = struct {
     metadata_file: MMappedFile,
     menu_file: MMappedFile,
+    orders_file: MMappedFile,
+    current_order_items_file: MMappedFile,
+    order_items_dir: fs.Dir,
 
     const Self = @This();
 
@@ -112,6 +149,57 @@ const ActiveAppState = struct {
         // Subtract len.
         self.metadata().menu_len -= 1;
     }
+
+    fn orders(self: *Self) []Order {
+        var order_arr: [*]Order = @ptrCast(self.orders_file.ptr.ptr);
+        return order_arr[0..self.ordersLen()];
+    }
+
+    fn ordersLen(self: *Self) u64 {
+        return self.metadata().orders_len;
+    }
+
+    fn currentOrder(self: *Self) *Order {
+        const i: usize = @intCast(self.metadata().current_order_num);
+        return &self.orders()[i];
+    }
+
+    fn currentOrderItems(self: *Self) []MenuItem {
+        var current_order_items_arr: [*]MenuItem = @ptrCast(self.current_order_items_file.ptr.ptr);
+        return current_order_items_arr[0..@intCast(self.currentOrder().item_count)];
+    }
+
+    fn removeCurrentOrderItem(self: *Self, index: usize) void {
+        var items_slice = self.currentOrderItems();
+
+        var order = self.currentOrder();
+
+        order.total -= items_slice[index].price;
+
+        // Shift everything over.
+        for (index..items_slice.len - 1) |i| {
+            items_slice[i] = items_slice[i + 1];
+        }
+
+        // Subtract len.
+        order.item_count -= 1;
+    }
+
+    fn addItemToOrder(self: *Self, menu_item_index: usize) !*MenuItem {
+        const current_order_len_in_bytes = self.currentOrder().item_count * @sizeOf(MenuItem);
+        if (current_order_len_in_bytes >= self.current_order_items_file.ptr.len) {
+            try self.current_order_items_file.resize(current_order_len_in_bytes * 2);
+        }
+
+        const order = self.currentOrder();
+
+        var order_items_arr: [*]MenuItem = @ptrCast(self.current_order_items_file.ptr.ptr);
+        const i = order.item_count;
+        order_items_arr[i] = self.menu()[menu_item_index];
+        order.item_count += 1;
+        order.total += order_items_arr[i].price;
+        return &order_items_arr[i];
+    }
 };
 
 var rr_error_string: [512]u8 = mem.zeroes([512]u8);
@@ -135,6 +223,7 @@ export fn rr_start(dir_path_ptr: [*:0]const u8, dir_path_len: u32) ?*anyopaque {
         rr_error_string[3] = 0;
         return null;
     };
+    // TODO omg these errdefers will not work. I this to be a regular zig function...
     errdefer allocator.destroy(result);
 
     var dir = cwd.openDir(dir_path, .{}) catch |e| {
@@ -143,56 +232,47 @@ export fn rr_start(dir_path_ptr: [*:0]const u8, dir_path_len: u32) ?*anyopaque {
     };
     defer dir.close();
 
-    var metadata_file = dir.createFile("rr_metadata", .{ .read = true, .truncate = false }) catch |e| {
+    result.metadata_file = MMappedFile.open(dir, "rr_metadata", @intCast(@sizeOf(Metadata))) catch |e| {
         _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open metadata file ({})", .{e}) catch unreachable;
-        return null;
-    };
-    errdefer metadata_file.close();
-
-    var metadata_size = (metadata_file.stat() catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to stat metadata file ({})", .{e}) catch unreachable;
-        return null;
-    }).size;
-
-    if (metadata_size == 0) {
-        os.ftruncate(metadata_file.handle, @sizeOf(Metadata)) catch |e| {
-            _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to truncate metadata file ({})", .{e}) catch unreachable;
-            return null;
-        };
-    }
-
-    var menu_file = dir.createFile("rr_menu", .{ .read = true, .truncate = false }) catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open menu file ({})", .{e}) catch unreachable;
-        return null;
-    };
-    errdefer menu_file.close();
-
-    result.metadata_file = MMappedFile.init(metadata_file, @intCast(@sizeOf(Metadata))) catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to mmap metadata file ({})", .{e}) catch unreachable;
         return null;
     };
     errdefer result.metadata_file.deinit();
 
-    var menu_bytes_len = (menu_file.stat() catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to stat menu file ({})", .{e}) catch unreachable;
+    result.menu_file = MMappedFile.open(dir, "rr_menu", @sizeOf(MenuItem) * 32) catch |e| {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open menu file ({})", .{e}) catch unreachable;
         return null;
-    }).size;
+    };
+    errdefer result.menu_file.deinit();
 
-    if (menu_bytes_len == 0) {
-        // 32 menu items should be enough to start..
-        menu_bytes_len = @sizeOf(MenuItem) * 32;
+    result.orders_file = MMappedFile.open(dir, "rr_orders", @sizeOf(Order) * 32) catch |e| {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open orders file ({})", .{e}) catch unreachable;
+        return null;
+    };
+    errdefer result.orders_file.deinit();
 
-        os.ftruncate(menu_file.handle, menu_bytes_len) catch |e| {
-            _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to truncate menu file ({})", .{e}) catch unreachable;
+    // Here I want to make sure we always have a current orders file.
+    dir.makeDir("rr_orderitems") catch {};
+    result.order_items_dir = dir.openDir("rr_orderitems", .{}) catch |e| {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open order items directory ({})", .{e}) catch unreachable;
+        return null;
+    };
+    errdefer result.order_items_dir.close();
+
+    // Open order items file for current order.
+    {
+        var buf: [16]u8 = undefined;
+        const order_num = result.metadata().current_order_num;
+        const order_items_file_path = fmt.bufPrint(buf[0..], "{}", .{order_num}) catch unreachable;
+        result.current_order_items_file = MMappedFile.open(result.order_items_dir, order_items_file_path, @sizeOf(MenuItem) * 4) catch |e| {
+            _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open order items file ({})", .{e}) catch unreachable;
             return null;
         };
     }
 
-    result.menu_file = MMappedFile.init(menu_file, menu_bytes_len) catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to mmap menu file ({})", .{e}) catch unreachable;
-        return null;
-    };
-    errdefer result.menu_file.deinit();
+    // Should always have 1 order, as one is opened by default.
+    if (result.metadata().orders_len == 0) {
+        result.metadata().orders_len = 1;
+    }
 
     return @ptrCast(result);
 }
@@ -201,6 +281,9 @@ export fn rr_cleanup(app_state_ptr: *anyopaque) void {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
     app_state.metadata_file.deinit();
     app_state.menu_file.deinit();
+    app_state.orders_file.deinit();
+    app_state.order_items_dir.close();
+    app_state.current_order_items_file.deinit();
 
     allocator.destroy(app_state);
 }
@@ -251,7 +334,7 @@ export fn rr_menu_update(
 ) c_int {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(app_state, index)) {
+    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
         return 0;
     }
 
@@ -279,7 +362,7 @@ export fn rr_menu_remove(
 ) c_int {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(app_state, index)) {
+    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
         return 0;
     }
 
@@ -325,7 +408,7 @@ export fn rr_menu_item_set_price(
 ) c_int {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(app_state, index)) {
+    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
         return 0;
     }
 
@@ -334,12 +417,55 @@ export fn rr_menu_item_set_price(
     return 1;
 }
 
+export fn rr_orders_len(app_state_ptr: *anyopaque) u64 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+    return app_state.ordersLen();
+}
+
+export fn rr_current_order_len(app_state_ptr: *anyopaque) u32 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+    return app_state.currentOrder().item_count;
+}
+
+export fn rr_current_order_total(app_state_ptr: *anyopaque) i64 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+    return app_state.currentOrder().total;
+}
+
+export fn rr_add_item_to_order(app_state_ptr: *anyopaque, menu_item_index: u32) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(menu_item_index, app_state.menuLen(), "Menu")) {
+        return 0;
+    }
+
+    _ = app_state.addItemToOrder(@intCast(menu_item_index)) catch {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Filesystem error", .{}) catch unreachable;
+        return 0;
+    };
+
+    return 1;
+}
+
+export fn rr_remove_order_item(app_state_ptr: *anyopaque, index: u32) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(index, app_state.currentOrder().item_count, "Order item")) {
+        return 0;
+    }
+
+    app_state.removeCurrentOrderItem(index);
+
+    return 1;
+}
+
 fn isOutOfBounds(
-    app_state: *ActiveAppState,
     index: u32,
+    bounds: u32,
+    comptime whatisit: []const u8,
 ) bool {
-    if (index >= app_state.menuLen()) {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Menu index ({}) out of bounds ({})", .{ index, app_state.menuLen() }) catch unreachable;
+    if (index >= bounds) {
+        _ = fmt.bufPrintZ(rr_error_string[0..], whatisit ++ " index ({}) out of bounds ({})", .{ index, bounds }) catch unreachable;
         return true;
     }
     return false;
@@ -354,7 +480,7 @@ fn fetchMenuItemAttr(
 ) return_type {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(app_state, index)) {
+    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
         return on_not_found;
     }
 
@@ -381,7 +507,7 @@ fn setMenuItemStringAttr(
 ) c_int {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
-    if (isOutOfBounds(app_state, index)) {
+    if (isOutOfBounds(index, app_state.menuLen(), "Menu")) {
         return 0;
     }
 
@@ -459,6 +585,41 @@ test "app functionality" {
 
         const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 1);
         try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+    }
+
+    // Populate the current order
+    {
+        try testing.expectEqual(rr_orders_len(app), 1);
+        try testing.expectEqual(rr_current_order_len(app), 0);
+
+        var result = rr_add_item_to_order(app, 1);
+        if (result != 1) {
+            std.log.err("ORDER ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_item_add_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_len(app), 1);
+        try testing.expectEqual(rr_current_order_total(app), 300);
+
+        result = rr_add_item_to_order(app, 0);
+        if (result != 1) {
+            std.log.err("ORDER ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_item_add_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_len(app), 2);
+        try testing.expectEqual(rr_current_order_total(app), 152 + 300);
+    }
+
+    // Remove an order item
+    {
+        const result = rr_remove_order_item(app, 0);
+        if (result != 1) {
+            std.log.err("ORDER ITEM REMOVE FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_item_remove_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_total(app), 152);
     }
 
     // Cleanup and then start again. All data should be persisted.
