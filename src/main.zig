@@ -36,11 +36,11 @@ const Metadata = extern struct {
 };
 
 const Order = extern struct {
-    total: i64,
-    item_count: u32,
+    total: i64 = 0,
+    item_count: u32 = 0,
 
     /// Maybe stupid but in case I want to add more fields without hell.
-    padding: [256]u8,
+    padding: [256]u8 = undefined,
 };
 
 const MMappedFile = struct {
@@ -204,6 +204,26 @@ const ActiveAppState = struct {
         order.item_count += 1;
         order.total += order_items_arr[i].price;
         return &order_items_arr[i];
+    }
+
+    fn completeOrder(self: *Self) !void {
+        const current_orders_len_in_bytes = self.ordersLen() * @sizeOf(Order);
+        if (current_orders_len_in_bytes >= self.orders_file.ptr.len) {
+            try self.orders_file.resize(current_orders_len_in_bytes * 2);
+        }
+
+        var orders_arr: [*]Order = @ptrCast(self.orders_file.ptr.ptr);
+        const i = self.ordersLen();
+        orders_arr[i] = Order{};
+        self.metadata().orders_len += 1;
+        self.metadata().current_order_num += 1;
+
+        // Open the next order file
+        var buf: [16]u8 = undefined;
+        const order_num = self.metadata().current_order_num;
+        const order_items_file_path = fmt.bufPrint(buf[0..], "{}", .{order_num}) catch unreachable;
+        self.current_order_items_file.deinit();
+        self.current_order_items_file = try MMappedFile.open(self.order_items_dir, order_items_file_path, @sizeOf(MenuItem) * 4);
     }
 };
 
@@ -503,6 +523,17 @@ export fn rr_order_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
     );
 }
 
+export fn rr_complete_order(app_state_ptr: *anyopaque) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    app_state.completeOrder() catch |e| {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Filesystem error while completing order {}", .{e}) catch unreachable;
+        return 0;
+    };
+
+    return 1;
+}
+
 fn isOutOfBounds(
     index: u32,
     bounds: u32,
@@ -671,6 +702,45 @@ test "app functionality" {
 
         try testing.expectEqual(rr_current_order_total(app), 152);
         try testing.expectEqual(rr_order_item_price(app, 0), 152);
+    }
+
+    // Complete the order
+    {
+        const result = rr_complete_order(app);
+        if (result != 1) {
+            std.log.err("ORDER COMPLETION FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_completion_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_total(app), 0);
+        try testing.expectEqual(rr_order_item_price(app, 0), 0);
+    }
+
+    // Populate current order again
+    {
+        try testing.expectEqual(rr_orders_len(app), 2);
+        try testing.expectEqual(rr_current_order_len(app), 0);
+
+        var result = rr_add_item_to_order(app, 1);
+        if (result != 1) {
+            std.log.err("ORDER ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_item_add_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_len(app), 1);
+        try testing.expectEqual(rr_current_order_total(app), 300);
+
+        const fetched_name: [*:0]const u8 = rr_order_item_name(app, 0);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+
+        result = rr_add_item_to_order(app, 0);
+        if (result != 1) {
+            std.log.err("ORDER ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_item_add_failed;
+        }
+
+        try testing.expectEqual(rr_current_order_len(app), 2);
+        try testing.expectEqual(rr_current_order_total(app), 152 + 300);
     }
 
     // Cleanup and then start again. All data should be persisted.
