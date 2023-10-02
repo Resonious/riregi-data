@@ -214,7 +214,7 @@ const ActiveAppState = struct {
 
         var orders_arr: [*]Order = @ptrCast(self.orders_file.ptr.ptr);
         const i = self.ordersLen();
-        orders_arr[i] = Order{};
+        orders_arr[@intCast(i)] = Order{};
         self.metadata().orders_len += 1;
         self.metadata().current_order_num += 1;
 
