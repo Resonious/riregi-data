@@ -210,6 +210,16 @@ export fn rr_order_total(app_state_ptr: *anyopaque, index: u64) i64 {
     return app_state.orders()[@intCast(index)].total;
 }
 
+export fn rr_order_payment_method(app_state_ptr: *anyopaque, index: u64) u16 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(u64, index, app_state.ordersLen(), "Order")) {
+        return 0;
+    }
+
+    return app_state.orders()[@intCast(index)].payment_method;
+}
+
 export fn rr_order_timestamp(app_state_ptr: *anyopaque, index: u64) i64 {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
