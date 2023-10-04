@@ -95,9 +95,13 @@ pub const Order = extern struct {
     /// Epoch time in MS.
     timestamp: i64 = 0,
 
+    payment_method: u16 = 0,
+
     /// Maybe stupid but in case I want to add more fields without hell.
-    padding: [248]u8 = undefined,
+    padding: [246]u8 = undefined,
 };
+
+pub var init_state: []const u8 = "not started";
 
 pub const ActiveAppState = struct {
     metadata_file: MMappedFile,
@@ -114,23 +118,28 @@ pub const ActiveAppState = struct {
         var result = try allocator.create(ActiveAppState);
         errdefer allocator.destroy(result);
 
+        init_state = "opening data dir";
         var dir = try cwd.openDir(dir_path, .{});
         defer dir.close();
 
+        init_state = "opening metadata";
         result.metadata_file = try MMappedFile.open(dir, "rr_metadata", @intCast(@sizeOf(Metadata)));
         errdefer result.metadata_file.deinit();
 
         // TODO: metadata version will be 0 for a fresh install. this means migrations will run
         // for a fresh install which might be weird? I guess it works though.
 
+        init_state = "opening menu file";
         result.menu_file = try MMappedFile.open(dir, "rr_menu", @sizeOf(MenuItem) * 32);
         errdefer result.menu_file.deinit();
 
+        init_state = "opening orders file";
         result.orders_file = try MMappedFile.open(dir, "rr_orders", @sizeOf(Order) * 32);
         errdefer result.orders_file.deinit();
 
         // Here I want to make sure we always have a current orders file.
         dir.makeDir("rr_orderitems") catch {};
+        init_state = "opening order items dir";
         result.order_items_dir = try dir.openDir("rr_orderitems", .{});
         errdefer result.order_items_dir.close();
 
@@ -139,6 +148,7 @@ pub const ActiveAppState = struct {
             var buf: [16]u8 = undefined;
             const order_num = result.metadata().current_order_num;
             const order_items_file_path = fmt.bufPrint(buf[0..], "{}", .{order_num}) catch unreachable;
+            init_state = "opening current order items file";
             result.current_order_items_file = try MMappedFile.open(result.order_items_dir, order_items_file_path, @sizeOf(MenuItem) * 4);
         }
 
@@ -147,6 +157,7 @@ pub const ActiveAppState = struct {
             result.metadata().orders_len = 1;
         }
 
+        init_state = "done";
         return result;
     }
 

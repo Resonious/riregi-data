@@ -28,7 +28,7 @@ export fn rr_start(dir_path_ptr: [*:0]const u8, dir_path_len: u32) ?*anyopaque {
     const dir_path = dir_path_ptr[0..dir_path_len];
 
     const result = ActiveAppState.new(allocator, dir_path) catch |e| {
-        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to start ({})", .{e}) catch unreachable;
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to start ({}) (init: {s})", .{ e, data.init_state }) catch unreachable;
         return null;
     };
 
@@ -185,6 +185,19 @@ export fn rr_current_order_len(app_state_ptr: *anyopaque) u32 {
 export fn rr_current_order_total(app_state_ptr: *anyopaque) i64 {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
     return app_state.currentOrder().total;
+}
+
+export fn rr_current_order_payment_method(app_state_ptr: *anyopaque) u16 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+    return app_state.currentOrder().payment_method;
+}
+
+export fn rr_current_order_set_payment_method(
+    app_state_ptr: *anyopaque,
+    payment_method: u16,
+) void {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+    app_state.currentOrder().payment_method = payment_method;
 }
 
 export fn rr_order_total(app_state_ptr: *anyopaque, index: u64) i64 {
@@ -470,7 +483,7 @@ test "app functionality" {
         try testing.expect(rr_order_timestamp(app, 0) != 0);
     }
 
-    // Populate current order again
+    // Populate new order
     {
         try testing.expectEqual(rr_orders_len(app), 2);
         try testing.expectEqual(rr_current_order_len(app), 0);
@@ -481,8 +494,11 @@ test "app functionality" {
             return error.order_item_add_failed;
         }
 
+        rr_current_order_set_payment_method(app, 2);
+
         try testing.expectEqual(rr_current_order_len(app), 1);
         try testing.expectEqual(rr_current_order_total(app), 300);
+        try testing.expectEqual(rr_current_order_payment_method(app), 2);
 
         const fetched_name: [*:0]const u8 = rr_order_item_name(app, 0);
         try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
