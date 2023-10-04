@@ -194,7 +194,7 @@ export fn rr_order_total(app_state_ptr: *anyopaque, index: u64) i64 {
         return 0;
     }
 
-    return app_state.orders()[index].total;
+    return app_state.orders()[@intCast(index)].total;
 }
 
 export fn rr_order_timestamp(app_state_ptr: *anyopaque, index: u64) i64 {
@@ -204,7 +204,7 @@ export fn rr_order_timestamp(app_state_ptr: *anyopaque, index: u64) i64 {
         return 0;
     }
 
-    return app_state.orders()[index].timestamp;
+    return app_state.orders()[@intCast(index)].timestamp;
 }
 
 export fn rr_add_item_to_order(app_state_ptr: *anyopaque, menu_item_index: u32) c_int {

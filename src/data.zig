@@ -120,6 +120,9 @@ pub const ActiveAppState = struct {
         result.metadata_file = try MMappedFile.open(dir, "rr_metadata", @intCast(@sizeOf(Metadata)));
         errdefer result.metadata_file.deinit();
 
+        // TODO: metadata version will be 0 for a fresh install. this means migrations will run
+        // for a fresh install which might be weird? I guess it works though.
+
         result.menu_file = try MMappedFile.open(dir, "rr_menu", @sizeOf(MenuItem) * 32);
         errdefer result.menu_file.deinit();
 
