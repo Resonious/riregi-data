@@ -20,7 +20,7 @@ pub const MMappedFile = struct {
 
         var file_size = (try file.stat()).size;
 
-        if (file_size == 0) {
+        if (file_size < bytesize) {
             try os.ftruncate(file.handle, bytesize);
         }
 
