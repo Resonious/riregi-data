@@ -95,6 +95,7 @@ pub const Order = extern struct {
     /// Epoch time in MS.
     timestamp: i64 = 0,
 
+    /// Arbitrary identifier of how the customer paid.
     payment_method: u16 = 0,
 
     /// Maybe stupid but in case I want to add more fields without hell.
