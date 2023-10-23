@@ -200,6 +200,16 @@ export fn rr_current_order_set_payment_method(
     app_state.currentOrder().payment_method = payment_method;
 }
 
+export fn rr_order_len(app_state_ptr: *anyopaque, index: u64) u32 {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(u64, index, app_state.ordersLen(), "Order")) {
+        return 0;
+    }
+
+    return app_state.orders()[@intCast(index)].item_count;
+}
+
 export fn rr_order_total(app_state_ptr: *anyopaque, index: u64) i64 {
     var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
 
@@ -289,6 +299,60 @@ export fn rr_order_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
         "Order Item",
         "currentOrderItemsCount",
         "currentOrderItems",
+        index,
+        "price",
+        i64,
+        0,
+    );
+}
+
+export fn rr_view_order(app_state_ptr: *anyopaque, order_num: u64) c_int {
+    var app_state = @as(*ActiveAppState, @alignCast(@ptrCast(app_state_ptr)));
+
+    if (isOutOfBounds(u64, order_num, app_state.metadata().orders_len, "Order")) {
+        return 0;
+    }
+
+    _ = app_state.viewOrder(order_num) catch |e| {
+        _ = fmt.bufPrintZ(rr_error_string[0..], "Failed to open order items file {}: {}", .{ order_num, e }) catch unreachable;
+        return 0;
+    };
+
+    return 1;
+}
+
+export fn rr_view_item_name(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item (view)",
+        "viewOrderItemsCount",
+        "viewOrderItems",
+        index,
+        "name",
+        [*c]const u8,
+        null,
+    );
+}
+
+export fn rr_view_item_image_path(app_state_ptr: *anyopaque, index: u32) [*c]const u8 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item (view)",
+        "viewOrderItemsCount",
+        "viewOrderItems",
+        index,
+        "image_path",
+        [*c]const u8,
+        null,
+    );
+}
+
+export fn rr_view_item_price(app_state_ptr: *anyopaque, index: u32) i64 {
+    return fetchMenuItemAttr(
+        app_state_ptr,
+        "Order Item (view)",
+        "viewOrderItemsCount",
+        "viewOrderItems",
         index,
         "price",
         i64,
@@ -413,7 +477,7 @@ test "app functionality" {
     try testing.expectEqual(rr_menu_item_price(app, 0), 152);
 
     {
-        const name = "tacos x3";
+        const name = "tacos x2";
         const image = "/tmp/img2.png";
         const result = rr_menu_add(app, 300, name, name.len, image, image.len);
 
@@ -425,9 +489,22 @@ test "app functionality" {
     try testing.expectEqual(rr_menu_len(app), 2);
     try testing.expectEqual(rr_menu_item_price(app, 1), 300);
 
+    {
+        const name = "tacos x3";
+        const image = "/tmp/img3.png";
+        const result = rr_menu_add(app, 333, name, name.len, image, image.len);
+
+        if (result != 1) {
+            std.log.err("MENU ITEM ADD FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.menu_item_add_failed;
+        }
+    }
+    try testing.expectEqual(rr_menu_len(app), 3);
+    try testing.expectEqual(rr_menu_item_price(app, 2), 333);
+
     // Try setting only the name
     {
-        const new_name = "new tacos";
+        const new_name = "new taco2";
         const result = rr_menu_item_set_name(app, 1, new_name, new_name.len);
 
         if (result != 1) {
@@ -436,7 +513,7 @@ test "app functionality" {
         }
 
         const fetched_name: [*:0]const u8 = rr_menu_item_name(app, 1);
-        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new taco2\x00");
     }
 
     // Populate the current order
@@ -454,7 +531,7 @@ test "app functionality" {
         try testing.expectEqual(rr_current_order_total(app), 300);
 
         const fetched_name: [*:0]const u8 = rr_order_item_name(app, 0);
-        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new taco2\x00");
 
         result = rr_add_item_to_order(app, 0);
         if (result != 1) {
@@ -511,7 +588,7 @@ test "app functionality" {
         try testing.expectEqual(rr_current_order_payment_method(app), 2);
 
         const fetched_name: [*:0]const u8 = rr_order_item_name(app, 0);
-        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new tacos\x00");
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new taco2\x00");
 
         result = rr_add_item_to_order(app, 0);
         if (result != 1) {
@@ -521,6 +598,52 @@ test "app functionality" {
 
         try testing.expectEqual(rr_current_order_len(app), 2);
         try testing.expectEqual(rr_current_order_total(app), 152 + 300);
+
+        result = rr_complete_order(app);
+        if (result != 1) {
+            std.log.err("ORDER (2) COMPLETION FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_completion_failed;
+        }
+    }
+
+    // We haven't "viewed" an order - make sure the operations still work
+    {
+        const fetched_name = rr_view_item_name(app, 0);
+        try testing.expect(fetched_name != null);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..6 :0], "error\x00");
+    }
+
+    // Let's try viewing the first order
+    {
+        var result = rr_view_order(app, 0);
+        if (result != 1) {
+            std.log.err("ORDER VIEW FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_view_failed;
+        }
+
+        const fetched_name = rr_view_item_name(app, 0);
+        try testing.expect(fetched_name != null);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..9 :0], "tacos x1\x00");
+
+        const null_name = rr_view_item_name(app, 1);
+        try testing.expect(null_name == null);
+    }
+
+    // Now the next
+    {
+        var result = rr_view_order(app, 1);
+        if (result != 1) {
+            std.log.err("ORDER VIEW 2 FAILED: {s}", .{rr_error_string[0.. :0]});
+            return error.order_view_failed;
+        }
+
+        var fetched_name = rr_view_item_name(app, 0);
+        try testing.expect(fetched_name != null);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..10 :0], "new taco2\x00");
+
+        fetched_name = rr_view_item_name(app, 1);
+        try testing.expect(fetched_name != null);
+        try testing.expectEqualSentinel(u8, 0, fetched_name[0..9 :0], "tacos x1\x00");
     }
 
     // Cleanup and then start again. All data should be persisted.
@@ -529,9 +652,10 @@ test "app functionality" {
         std.log.err("FAILED TO START (2): {s}", .{rr_error_string[0.. :0]});
         return error.failed_to_start;
     };
-    try testing.expectEqual(rr_menu_len(app), 2);
+    try testing.expectEqual(rr_menu_len(app), 3);
     try testing.expectEqual(rr_menu_item_price(app, 0), 152);
     try testing.expectEqual(rr_menu_item_price(app, 1), 300);
+    try testing.expectEqual(rr_menu_item_price(app, 2), 333);
     rr_cleanup(app);
 }
 
